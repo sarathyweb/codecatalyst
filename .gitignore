@@ -1,0 +1,13 @@
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+.env
+.env.*
+!.env.example
+
+# Go workspace caches
+bin/
+dist/
