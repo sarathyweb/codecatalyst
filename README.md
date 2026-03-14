@@ -2,6 +2,8 @@
 
 `codecatalyst` is a small Go CLI that reads a chat log file, sends its contents to Azure OpenAI using the Responses API, and appends the model output back to the same file.
 
+After each run, it prints the total elapsed time, token usage, and a USD cost breakdown to the terminal.
+
 ## Requirements
 
 - Go 1.25+
@@ -42,6 +44,7 @@ Behavior:
 1. Reads the full contents of the chat log file.
 2. Sends that content to the configured Azure OpenAI model.
 3. Appends the returned text as a new `AI Assistant:` block at the end of the same file.
+4. Prints elapsed time and token-cost summary information.
 
 ## Development
 
