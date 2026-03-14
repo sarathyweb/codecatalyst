@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/azure"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -20,47 +23,65 @@ const (
 )
 
 type config struct {
-	APIKey     string
-	EndPoint   string
-	APIVersion string
-	Model      string
+	APIKey         string `yaml:"azure_openai_api_key"`
+	EndPoint       string `yaml:"azure_openai_endpoint"`
+	APIVersion     string `yaml:"azure_openai_api_version"`
+	Model          string `yaml:"azure_openai_model"`
+	EmbeddingModel string `yaml:"azure_openai_embedding_model"`
+	DatabaseURL    string `yaml:"database_url"`
 }
 
 func main() {
-	startedAt := time.Now()
-
-	usage, err := run()
-	elapsed := time.Since(startedAt)
+	cmd, err := newRootCmd()
 	if err != nil {
-		log.Printf("failed after %s: %v", formatDuration(elapsed), err)
+		log.Print(err)
 		os.Exit(1)
 	}
 
-	printRunSummary(elapsed, usage)
+	if err := cmd.Execute(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
 }
 
-func run() (responses.ResponseUsage, error) {
-	if len(os.Args) < 2 {
-		return responses.ResponseUsage{}, fmt.Errorf("usage: codecatalyst.exe <chat-log-file>")
+func newRootCmd() (*cobra.Command, error) {
+	defaultConfigPath, err := defaultConfigPath()
+	if err != nil {
+		return nil, fmt.Errorf("resolve default config path: %w", err)
 	}
 
-	cfg, err := loadConfig()
+	var configPath string
+
+	cmd := &cobra.Command{
+		Use:           "codecatalyst <chat-log-file>",
+		Short:         "Send a chat log to Azure OpenAI and append the response",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			startedAt := time.Now()
+
+			usage, err := run(configPath, args[0])
+			elapsed := time.Since(startedAt)
+			if err != nil {
+				return fmt.Errorf("failed after %s: %w", formatDuration(elapsed), err)
+			}
+
+			printRunSummary(elapsed, usage)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "Path to the config file")
+	return cmd, nil
+}
+
+func run(configPath string, chatLogFile string) (responses.ResponseUsage, error) {
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return responses.ResponseUsage{}, err
 	}
 
-	chatLogFile := os.Args[1]
-
-	// e := echo.New()
-	// e.Use(middleware.RequestLogger())
-
-	// e.GET("/", func(c *echo.Context) error {
-	// 	return c.String(http.StatusOK, "Hello")
-	// })
-	// if err := e.Start(":5063"); err != nil {
-	// 	e.Logger.Error("Failed to start server", "error", err)
-	// }
-	// 1. Read chat log
 	content, err := os.ReadFile(chatLogFile)
 	if err != nil {
 		return responses.ResponseUsage{}, err
@@ -71,25 +92,21 @@ func run() (responses.ResponseUsage, error) {
 		azure.WithEndpoint(cfg.EndPoint, cfg.APIVersion),
 	)
 
-	// 2. Call model
 	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
 		Model: openai.ChatModel(cfg.Model),
 		Input: responses.ResponseNewParamsInputUnion{OfString: openai.String(string(content))},
-		// Instructions: openai.String(sm),
 	})
 	if err != nil {
 		return responses.ResponseUsage{}, err
 	}
 
-	// 3. Append AI output
 	f, err := os.OpenFile(chatLogFile, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return responses.ResponseUsage{}, err
 	}
 	defer f.Close()
 
-	_, err = f.WriteString("\nAI Assistant:\n" + resp.OutputText() + "\n")
-	if err != nil {
+	if _, err := f.WriteString("\nAI Assistant:\n" + resp.OutputText() + "\n"); err != nil {
 		return responses.ResponseUsage{}, err
 	}
 
@@ -126,44 +143,58 @@ func formatDuration(duration time.Duration) time.Duration {
 	return duration.Round(time.Millisecond)
 }
 
-func loadConfig() (config, error) {
-	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
-		return config{}, fmt.Errorf("failed to load .env: %w", err)
+func loadConfig(configPath string) (config, error) {
+	configPath = filepath.Clean(strings.TrimSpace(configPath))
+	if configPath == "" {
+		return config{}, errors.New("config path is required")
 	}
 
-	apiKey, err := requiredEnv("AZURE_OPENAI_API_KEY")
+	content, err := os.ReadFile(configPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return config{}, fmt.Errorf("config file not found: %s", configPath)
+		}
+
 		return config{}, err
 	}
 
-	endPoint, err := requiredEnv("AZURE_OPENAI_ENDPOINT")
-	if err != nil {
-		return config{}, err
+	var cfg config
+	if err := yaml.Unmarshal(content, &cfg); err != nil {
+		return config{}, fmt.Errorf("decode config file %s: %w", configPath, err)
 	}
 
-	apiVersion, err := requiredEnv("AZURE_OPENAI_API_VERSION")
-	if err != nil {
-		return config{}, err
+	if err := cfg.validate(); err != nil {
+		return config{}, fmt.Errorf("invalid config file %s: %w", configPath, err)
 	}
 
-	model, err := requiredEnv("AZURE_OPENAI_MODEL")
-	if err != nil {
-		return config{}, err
-	}
-
-	return config{
-		APIKey:     apiKey,
-		EndPoint:   endPoint,
-		APIVersion: apiVersion,
-		Model:      model,
-	}, nil
+	return cfg, nil
 }
 
-func requiredEnv(key string) (string, error) {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
-		return "", fmt.Errorf("%s is required", key)
+func (cfg config) validate() error {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return errors.New("azure_openai_api_key is required")
 	}
 
-	return value, nil
+	if strings.TrimSpace(cfg.EndPoint) == "" {
+		return errors.New("azure_openai_endpoint is required")
+	}
+
+	if strings.TrimSpace(cfg.APIVersion) == "" {
+		return errors.New("azure_openai_api_version is required")
+	}
+
+	if strings.TrimSpace(cfg.Model) == "" {
+		return errors.New("azure_openai_model is required")
+	}
+
+	return nil
+}
+
+func defaultConfigPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(homeDir, ".codecatalyst.yaml"), nil
 }

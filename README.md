@@ -1,6 +1,6 @@
 # codecatalyst
 
-`codecatalyst` is a small Go CLI that reads a chat log file, sends its contents to Azure OpenAI using the Responses API, and appends the model output back to the same file.
+`codecatalyst` is a small Go CLI built with Cobra. It reads a chat log file, sends its contents to Azure OpenAI using the Responses API, and appends the model output back to the same file.
 
 After each run, it prints the total elapsed time, token usage, and a USD cost breakdown to the terminal.
 
@@ -12,20 +12,22 @@ After each run, it prints the total elapsed time, token usage, and a USD cost br
 
 ## Configuration
 
-Copy the example env file and fill in your real values:
+The CLI reads a global YAML config file. By default it expects:
 
-```powershell
-Copy-Item .env.example .env
+- `~/.codemigo.yaml`
+
+You can override the path with `--config`.
+
+Example config file:
+
+```yaml
+azure_openai_api_key: "your-azure-openai-api-key"
+azure_openai_endpoint: "https://your-resource.openai.azure.com/"
+azure_openai_api_version: "2025-03-01-preview"
+azure_openai_model: "gpt-5"
+azure_openai_embedding_model: "text-embedding-3-large"
+database_url: "postgres://postgres:postgres@localhost:5432/codemigo?sslmode=disable"
 ```
-
-Required environment variables:
-
-- `AZURE_OPENAI_API_KEY`
-- `AZURE_OPENAI_ENDPOINT`
-- `AZURE_OPENAI_API_VERSION`
-- `AZURE_OPENAI_MODEL`
-
-The app loads variables from `.env` automatically via `godotenv`.
 
 ## Build
 
@@ -37,6 +39,10 @@ go build -o codecatalyst.exe .
 
 ```powershell
 .\codecatalyst.exe .\chat.log
+```
+
+```powershell
+.\codecatalyst.exe --config C:\path\to\codemigo.yaml .\chat.log
 ```
 
 Behavior:
@@ -58,5 +64,5 @@ go build ./...
 ## Files
 
 - `main.go`: CLI entry point and Azure OpenAI request flow
-- `.env.example`: safe template for local configuration
+- `codemigo.example.yaml`: safe template for the global config file
 - `.gitignore`: excludes binaries and local env files from git
