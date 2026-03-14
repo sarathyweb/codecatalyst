@@ -114,21 +114,11 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 }
 
 func printRunSummary(elapsed time.Duration, usage responses.ResponseUsage) {
-	inputCost := tokenCostUSD(usage.InputTokens, inputTokenPricePerMillionUSD)
-	outputCost := tokenCostUSD(usage.OutputTokens, outputTokenPricePerMillionUSD)
-	totalCost := inputCost + outputCost
+	totalCost := tokenCostUSD(usage.InputTokens, inputTokenPricePerMillionUSD) +
+		tokenCostUSD(usage.OutputTokens, outputTokenPricePerMillionUSD)
 
-	fmt.Printf("Completed in %s\n", formatDuration(elapsed))
-	fmt.Println("Usage summary:")
-	fmt.Printf("  Input tokens: %d\n", usage.InputTokens)
-	fmt.Printf("  Cached input tokens: %d\n", usage.InputTokensDetails.CachedTokens)
-	fmt.Printf("  Output tokens: %d\n", usage.OutputTokens)
-	fmt.Printf("  Reasoning tokens: %d\n", usage.OutputTokensDetails.ReasoningTokens)
-	fmt.Printf("  Total tokens: %d\n", usage.TotalTokens)
-	fmt.Println("Cost breakdown:")
-	fmt.Printf("  Input: %d tokens x $%.2f / 1M = $%.6f\n", usage.InputTokens, inputTokenPricePerMillionUSD, inputCost)
-	fmt.Printf("  Output: %d tokens x $%.2f / 1M = $%.6f\n", usage.OutputTokens, outputTokenPricePerMillionUSD, outputCost)
-	fmt.Printf("  Total cost: $%.6f\n", totalCost)
+	fmt.Printf("Done in %s | %d tokens | $%.4f\n",
+		formatDuration(elapsed), usage.TotalTokens, totalCost)
 }
 
 func tokenCostUSD(tokens int64, pricePerMillionUSD float64) float64 {
