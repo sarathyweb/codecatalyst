@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,23 +13,26 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/azure"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	inputTokenPricePerMillionUSD  = 30.00
-	outputTokenPricePerMillionUSD = 180.00
+	gpt56SolInputTokenPricePerMillionUSD  = 5.00
+	gpt56SolOutputTokenPricePerMillionUSD = 30.00
 )
 
 type config struct {
-	APIKey         string `yaml:"azure_openai_api_key"`
-	EndPoint       string `yaml:"azure_openai_endpoint"`
-	APIVersion     string `yaml:"azure_openai_api_version"`
-	Model          string `yaml:"azure_openai_model"`
-	EmbeddingModel string `yaml:"azure_openai_embedding_model"`
-	DatabaseURL    string `yaml:"database_url"`
+	APIKey         string               `yaml:"azure_openai_api_key"`
+	EndPoint       string               `yaml:"azure_openai_endpoint"`
+	Model          string               `yaml:"azure_openai_model"`
+	ReasoningMode  shared.ReasoningMode `yaml:"azure_openai_reasoning_mode"`
+	MultiAgent     bool                 `yaml:"azure_openai_multi_agent"`
+	EmbeddingModel string               `yaml:"azure_openai_embedding_model"`
+	DatabaseURL    string               `yaml:"database_url"`
 }
 
 func main() {
@@ -87,15 +91,26 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 		return responses.ResponseUsage{}, err
 	}
 
+	baseURL, err := azureOpenAIBaseURL(cfg.EndPoint)
+	if err != nil {
+		return responses.ResponseUsage{}, err
+	}
+
 	client := openai.NewClient(
 		azure.WithAPIKey(cfg.APIKey),
-		azure.WithEndpoint(cfg.EndPoint, cfg.APIVersion),
+		option.WithBaseURL(baseURL),
 	)
 
+	requestOptions := make([]option.RequestOption, 0, 1)
+	if cfg.MultiAgent {
+		requestOptions = append(requestOptions, option.WithJSONSet("multi_agent.enabled", true))
+	}
+
 	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
-		Model: openai.ChatModel(cfg.Model),
-		Input: responses.ResponseNewParamsInputUnion{OfString: openai.String(string(content))},
-	})
+		Model:     openai.ChatModel(cfg.Model),
+		Input:     responses.ResponseNewParamsInputUnion{OfString: openai.String(string(content))},
+		Reasoning: shared.ReasoningParam{Mode: cfg.ReasoningMode},
+	}, requestOptions...)
 	if err != nil {
 		return responses.ResponseUsage{}, err
 	}
@@ -114,8 +129,8 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 }
 
 func printRunSummary(elapsed time.Duration, usage responses.ResponseUsage) {
-	totalCost := tokenCostUSD(usage.InputTokens, inputTokenPricePerMillionUSD) +
-		tokenCostUSD(usage.OutputTokens, outputTokenPricePerMillionUSD)
+	totalCost := tokenCostUSD(usage.InputTokens, gpt56SolInputTokenPricePerMillionUSD) +
+		tokenCostUSD(usage.OutputTokens, gpt56SolOutputTokenPricePerMillionUSD)
 
 	fmt.Printf("Done in %s | %d tokens | $%.4f\n",
 		formatDuration(elapsed), usage.TotalTokens, totalCost)
@@ -148,7 +163,10 @@ func loadConfig(configPath string) (config, error) {
 		return config{}, err
 	}
 
-	var cfg config
+	cfg := config{
+		ReasoningMode: shared.ReasoningModePro,
+		MultiAgent:    true,
+	}
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
 		return config{}, fmt.Errorf("decode config file %s: %w", configPath, err)
 	}
@@ -169,15 +187,45 @@ func (cfg config) validate() error {
 		return errors.New("azure_openai_endpoint is required")
 	}
 
-	if strings.TrimSpace(cfg.APIVersion) == "" {
-		return errors.New("azure_openai_api_version is required")
+	if _, err := azureOpenAIBaseURL(cfg.EndPoint); err != nil {
+		return fmt.Errorf("azure_openai_endpoint is invalid: %w", err)
 	}
 
 	if strings.TrimSpace(cfg.Model) == "" {
 		return errors.New("azure_openai_model is required")
 	}
 
+	switch cfg.ReasoningMode {
+	case shared.ReasoningModeStandard, shared.ReasoningModePro:
+	default:
+		return fmt.Errorf("azure_openai_reasoning_mode must be %q or %q", shared.ReasoningModeStandard, shared.ReasoningModePro)
+	}
+
 	return nil
+}
+
+func azureOpenAIBaseURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", err
+	}
+
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return "", errors.New("must be an absolute HTTPS URL")
+	}
+
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("must not contain a query string or fragment")
+	}
+
+	path := strings.TrimRight(parsed.Path, "/")
+	if !strings.HasSuffix(strings.ToLower(path), "/openai/v1") {
+		path += "/openai/v1"
+	}
+
+	parsed.Path = path + "/"
+	parsed.RawPath = ""
+	return parsed.String(), nil
 }
 
 func defaultConfigPath() (string, error) {

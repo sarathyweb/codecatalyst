@@ -3,7 +3,7 @@ module github.com/sarathyweb/codecatalyst
 go 1.25.0
 
 require (
-	github.com/openai/openai-go/v3 v3.16.0
+	github.com/openai/openai-go/v3 v3.44.0
 	github.com/spf13/cobra v1.9.1
 	gopkg.in/yaml.v3 v3.0.1
 )
