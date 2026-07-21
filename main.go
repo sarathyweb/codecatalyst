@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 const (
 	gpt56SolInputTokenPricePerMillionUSD  = 5.00
 	gpt56SolOutputTokenPricePerMillionUSD = 30.00
+	azureOpenAIRequestTimeout             = time.Hour
 )
 
 type config struct {
@@ -96,9 +98,13 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 		return responses.ResponseUsage{}, err
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = azureOpenAIRequestTimeout
+
 	client := openai.NewClient(
 		azure.WithAPIKey(cfg.APIKey),
 		option.WithBaseURL(baseURL),
+		option.WithHTTPClient(&http.Client{Transport: transport}),
 	)
 
 	requestOptions := make([]option.RequestOption, 0, 1)
@@ -106,7 +112,10 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 		requestOptions = append(requestOptions, option.WithJSONSet("multi_agent.enabled", true))
 	}
 
-	resp, err := client.Responses.New(context.Background(), responses.ResponseNewParams{
+	ctx, cancel := context.WithTimeout(context.Background(), azureOpenAIRequestTimeout)
+	defer cancel()
+
+	resp, err := client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:     openai.ChatModel(cfg.Model),
 		Input:     responses.ResponseNewParamsInputUnion{OfString: openai.String(string(content))},
 		Reasoning: shared.ReasoningParam{Mode: cfg.ReasoningMode},
