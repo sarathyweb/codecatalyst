@@ -24,7 +24,7 @@ import (
 const (
 	gpt56SolInputTokenPricePerMillionUSD  = 5.00
 	gpt56SolOutputTokenPricePerMillionUSD = 30.00
-	azureOpenAIRequestTimeout             = time.Hour
+	azureOpenAIRequestTimeout             = 24 * time.Hour
 )
 
 type config struct {
