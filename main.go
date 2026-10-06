@@ -21,20 +21,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	gpt56SolInputTokenPricePerMillionUSD  = 5.00
-	gpt56SolOutputTokenPricePerMillionUSD = 30.00
-	azureOpenAIRequestTimeout             = 24 * time.Hour
-)
+const azureOpenAIRequestTimeout = 24 * time.Hour
 
 type config struct {
-	APIKey         string               `yaml:"azure_openai_api_key"`
-	EndPoint       string               `yaml:"azure_openai_endpoint"`
-	Model          string               `yaml:"azure_openai_model"`
-	ReasoningMode  shared.ReasoningMode `yaml:"azure_openai_reasoning_mode"`
-	MultiAgent     bool                 `yaml:"azure_openai_multi_agent"`
-	EmbeddingModel string               `yaml:"azure_openai_embedding_model"`
-	DatabaseURL    string               `yaml:"database_url"`
+	APIKey          string                 `yaml:"azure_openai_api_key"`
+	EndPoint        string                 `yaml:"azure_openai_endpoint"`
+	Model           string                 `yaml:"azure_openai_model"`
+	ReasoningMode   shared.ReasoningMode   `yaml:"azure_openai_reasoning_mode"`
+	ReasoningEffort shared.ReasoningEffort `yaml:"azure_openai_reasoning_effort"`
+	MultiAgent      bool                   `yaml:"azure_openai_multi_agent"`
+	EmbeddingModel  string                 `yaml:"azure_openai_embedding_model"`
+	DatabaseURL     string                 `yaml:"database_url"`
+}
+
+type runResult struct {
+	Model string
+	Usage responses.ResponseUsage
 }
 
 func main() {
@@ -67,13 +69,13 @@ func newRootCmd() (*cobra.Command, error) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			startedAt := time.Now()
 
-			usage, err := run(configPath, args[0])
+			result, err := run(configPath, args[0])
 			elapsed := time.Since(startedAt)
 			if err != nil {
 				return fmt.Errorf("failed after %s: %w", formatDuration(elapsed), err)
 			}
 
-			printRunSummary(elapsed, usage)
+			printRunSummary(elapsed, result)
 			return nil
 		},
 	}
@@ -82,20 +84,20 @@ func newRootCmd() (*cobra.Command, error) {
 	return cmd, nil
 }
 
-func run(configPath string, chatLogFile string) (responses.ResponseUsage, error) {
+func run(configPath string, chatLogFile string) (runResult, error) {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 
 	content, err := os.ReadFile(chatLogFile)
 	if err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 
 	baseURL, err := azureOpenAIBaseURL(cfg.EndPoint)
 	if err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -118,35 +120,37 @@ func run(configPath string, chatLogFile string) (responses.ResponseUsage, error)
 	resp, err := client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:     openai.ChatModel(cfg.Model),
 		Input:     responses.ResponseNewParamsInputUnion{OfString: openai.String(string(content))},
-		Reasoning: shared.ReasoningParam{Mode: cfg.ReasoningMode},
+		Reasoning: shared.ReasoningParam{Mode: cfg.ReasoningMode, Effort: cfg.ReasoningEffort},
 	}, requestOptions...)
 	if err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 
 	f, err := os.OpenFile(chatLogFile, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 	defer f.Close()
 
 	if _, err := f.WriteString("\nAI Assistant:\n" + resp.OutputText() + "\n"); err != nil {
-		return responses.ResponseUsage{}, err
+		return runResult{}, err
 	}
 
-	return resp.Usage, nil
+	model := string(resp.Model)
+	if model == "" {
+		model = cfg.Model
+	}
+	return runResult{Model: model, Usage: resp.Usage}, nil
 }
 
-func printRunSummary(elapsed time.Duration, usage responses.ResponseUsage) {
-	totalCost := tokenCostUSD(usage.InputTokens, gpt56SolInputTokenPricePerMillionUSD) +
-		tokenCostUSD(usage.OutputTokens, gpt56SolOutputTokenPricePerMillionUSD)
+func printRunSummary(elapsed time.Duration, result runResult) {
+	cost := "cost unavailable"
+	if totalCost, ok := estimateTokenCostUSD(result.Model, result.Usage); ok {
+		cost = fmt.Sprintf("$%.4f", totalCost)
+	}
 
-	fmt.Printf("Done in %s | %d tokens | $%.4f\n",
-		formatDuration(elapsed), usage.TotalTokens, totalCost)
-}
-
-func tokenCostUSD(tokens int64, pricePerMillionUSD float64) float64 {
-	return (float64(tokens) / 1_000_000) * pricePerMillionUSD
+	fmt.Printf("Done in %s | %d tokens | %s\n",
+		formatDuration(elapsed), result.Usage.TotalTokens, cost)
 }
 
 func formatDuration(duration time.Duration) time.Duration {
@@ -173,8 +177,9 @@ func loadConfig(configPath string) (config, error) {
 	}
 
 	cfg := config{
-		ReasoningMode: shared.ReasoningModePro,
-		MultiAgent:    true,
+		ReasoningMode:   shared.ReasoningModePro,
+		ReasoningEffort: shared.ReasoningEffortXhigh,
+		MultiAgent:      true,
 	}
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
 		return config{}, fmt.Errorf("decode config file %s: %w", configPath, err)
@@ -208,6 +213,13 @@ func (cfg config) validate() error {
 	case shared.ReasoningModeStandard, shared.ReasoningModePro:
 	default:
 		return fmt.Errorf("azure_openai_reasoning_mode must be %q or %q", shared.ReasoningModeStandard, shared.ReasoningModePro)
+	}
+
+	switch cfg.ReasoningEffort {
+	case shared.ReasoningEffortLow, shared.ReasoningEffortMedium, shared.ReasoningEffortHigh,
+		shared.ReasoningEffortXhigh, shared.ReasoningEffortMax:
+	default:
+		return errors.New("azure_openai_reasoning_effort must be low, medium, high, xhigh, or max")
 	}
 
 	return nil
